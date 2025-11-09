@@ -2,14 +2,19 @@ import pickle
 import streamlit as st
 import requests
 import pandas as pd
+import numpy as np
+import time
 
-# --- Set page wide so posters cover full screen ---
+# -------------------------------
+# ⚙️ PAGE CONFIGURATION
+# -------------------------------
 st.set_page_config(layout="wide")
 
-# --- Global CSS Styling ---
+# -------------------------------
+# 💅 GLOBAL CSS STYLING
+# -------------------------------
 st.markdown("""
     <style>
-        /* Vibrant gradient background */
         .stApp {
             background: linear-gradient(135deg, #1a2a6c, #b21f1f, #fdbb2d);
             background-size: 400% 400%;
@@ -18,14 +23,12 @@ st.markdown("""
             font-family: 'Trebuchet MS', sans-serif;
         }
 
-        /* Animate gradient for dynamic effect */
         @keyframes gradientBG {
             0% {background-position: 0% 50%;}
             50% {background-position: 100% 50%;}
             100% {background-position: 0% 50%;}
         }
 
-        /* Film grain overlay */
         .stApp::before {
             content: "";
             position: fixed;
@@ -35,7 +38,6 @@ st.markdown("""
             z-index: -1;
         }
 
-        /* --- HEADER / NAVBAR --- */
         header[data-testid="stHeader"] {
             background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
             height: 65px;
@@ -46,11 +48,10 @@ st.markdown("""
             background: transparent !important;
         }
 
-        /* Inject Title Text inside Header on the LEFT */
         header[data-testid="stHeader"]::before {
             content: "🍿🎬 Movie Recommender System";
             position: absolute;
-            left: 20px;   /* distance from left edge */
+            left: 20px;
             top: 50%;
             transform: translateY(-50%);
             font-size: 20px;
@@ -59,11 +60,9 @@ st.markdown("""
             text-shadow: 0px 0px 10px rgba(255,255,255,0.7);
         }
 
-        /* Hide default Streamlit footer/menu */
         footer {visibility: hidden;}
         #MainMenu {visibility: hidden;}
 
-        /* Body Header Titles */
         h1, h2, h3 {
             color: #fff;
             text-align: center;
@@ -71,7 +70,6 @@ st.markdown("""
             text-shadow: 0px 0px 20px rgba(255,255,255,0.8);
         }
 
-        /* Dropdown + Button */
         .stSelectbox label, .stButton>button {
             font-size: 18px;
             font-weight: bold;
@@ -95,16 +93,14 @@ st.markdown("""
             box-shadow: 0px 6px 20px rgba(221,36,118,0.9);
         }
 
-        /* Poster styling (bigger and full column) */
         img {
             border-radius: 15px;
             box-shadow: 0 8px 25px rgba(0,0,0,0.9);
-            height: 300px !important;   /* taller movie cards */
-            width: 100% !important;     /* make image fill full column */
-            object-fit: cover;          /* no squish, crop nicely */
+            height: 300px !important;
+            width: 100% !important;
+            object-fit: cover;
         }
 
-        /* Movie title under posters */
         .movie-title {
             text-align: center;
             font-size: 17px;
@@ -116,10 +112,29 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- App Main Title (kept in the main screen too) ---
+# -------------------------------
+# 🎬 APP TITLE
+# -------------------------------
 st.markdown("<h1>🍿🎬 Movie Recommender System</h1>", unsafe_allow_html=True)
 
-# --- Fetch poster from TMDb ---
+
+# -------------------------------
+# 📦 CACHED DATA LOAD
+# -------------------------------
+@st.cache_resource
+def load_data():
+    movies = pickle.load(open('model/movie_list.pkl', 'rb'))
+    movies = movies.rename(columns={'id': 'movie_id'})
+    similarity = pickle.load(open('model/similarity.pkl', 'rb'))
+    return movies, similarity
+
+movies, similarity = load_data()
+
+
+# -------------------------------
+# 🖼️ CACHED POSTER FETCH
+# -------------------------------
+@st.cache_data
 def fetch_poster(movie_id):
     url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key=8772dfc69b99d1fa093d7284ce3604f6&language=en-US"
     try:
@@ -132,35 +147,53 @@ def fetch_poster(movie_id):
     except requests.exceptions.RequestException:
         return "https://via.placeholder.com/500x750?text=No+Image"
 
-# --- Recommend movies ---
+
+# -------------------------------
+# ⚡ OPTIMIZED RECOMMENDATION
+# -------------------------------
+@st.cache_data
 def recommend(movie):
     index = movies[movies['title'] == movie].index[0]
-    distances = sorted(list(enumerate(similarity[index])), reverse=True, key=lambda x: x[1])
+    distances = similarity[index]
+
+    # ✅ Faster: Only get top 6 indices (instead of sorting everything)
+    top_indices = np.argpartition(distances, -6)[-6:]
+    top_indices = top_indices[np.argsort(distances[top_indices])[::-1]]
+
     recommended_movie_names = []
     recommended_movie_posters = []
-    for i in distances[1:6]:
-        movie_id = movies.iloc[i[0]]['movie_id']
-        recommended_movie_posters.append(fetch_poster(movie_id))
-        recommended_movie_names.append(movies.iloc[i[0]]['title'])
-    return recommended_movie_names, recommended_movie_posters
 
-# --- Load movie data + similarity matrix ---
-movies = pickle.load(open('model/movie_list.pkl', 'rb'))
-movies = movies.rename(columns={'id': 'movie_id'})
-similarity = pickle.load(open('model/similarity.pkl', 'rb'))
+    for i in top_indices:
+        if i != index:
+            movie_id = movies.iloc[i]['movie_id']
+            recommended_movie_posters.append(fetch_poster(movie_id))
+            recommended_movie_names.append(movies.iloc[i]['title'])
 
-# --- Movie Selection ---
+    return recommended_movie_names[:5], recommended_movie_posters[:5]
+
+
+# -------------------------------
+# 🎥 MOVIE SELECTION + LOADER
+# -------------------------------
 movie_list = movies['title'].values
 selected_movie = st.selectbox("🎥 Pick a Movie", movie_list)
 
-# --- Show Recommendations (5 posters across full page) ---
 if st.button('🎞️ Show Recommendations'):
-    recommended_movie_names, recommended_movie_posters = recommend(selected_movie)
+    # Use spinner and progress bar for smooth loading
+    with st.spinner("🔄 Please wait!"):
+        progress = st.progress(0)
+        for percent_complete in range(0, 100, 10):
+            time.sleep(0.05)
+            progress.progress(percent_complete + 10)
 
-    # 5 equal-width columns spanning full page
+        # 🧠 Important: Capture output inside spinner, don't display it automatically
+        recommended_movie_names, recommended_movie_posters = recommend(selected_movie)
+
+        # Clear the progress bar once done
+        progress.empty()
+
     cols = st.columns(5)
-
     for col, name, poster in zip(cols, recommended_movie_names, recommended_movie_posters):
         with col:
-            st.image(poster, width="stretch")   # new API (replaces use_container_width)
+            st.image(poster)
             st.markdown(f"<div class='movie-title'>{name}</div>", unsafe_allow_html=True)
